@@ -302,9 +302,9 @@ pub async fn target_message_handler<T: HttpClient>(
         &target.endpoints[idx % target.endpoints.len()]
     };
     debug!(
-        "Upstream endpoint for model '{}': {:?}",
+        "Upstream endpoint '{}' for model: {:?}",
+        endpoint.url.to_string(),
         model_name,
-        endpoint.url.to_string()
     );
 
     // Users can specify the onwards value of the model field in the target
