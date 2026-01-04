@@ -12,6 +12,7 @@ use futures_util::{Stream, StreamExt};
 use governor::{DefaultDirectRateLimiter, Quota};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicUsize;
 use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, pin::Pin, sync::Arc};
 use tokio::sync::{Semaphore, SemaphorePermit, mpsc};
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
@@ -29,11 +30,17 @@ pub struct ConcurrencyLimitParameters {
     pub max_concurrent_requests: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpStreamKeyDefinition {
+    pub key: String,
+    pub weight: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct TargetSpec {
     pub url: Url,
     pub keys: Option<KeySet>,
-    pub onwards_key: Option<String>,
+    pub onwards_key: Option<Vec<UpStreamKeyDefinition>>,
     pub onwards_model: Option<String>,
     pub rate_limit: Option<RateLimitParameters>,
     pub concurrency_limit: Option<ConcurrencyLimitParameters>,
@@ -63,10 +70,22 @@ fn normalize_url(mut url: Url) -> Url {
 
 impl From<TargetSpec> for Target {
     fn from(value: TargetSpec) -> Self {
+        let mut onwards_key_map = Vec::new();
+        if let Some(ref keys) = value.onwards_key {
+            for (idx, key_def) in keys.iter().enumerate() {
+                let w = key_def.weight.unwrap_or(1);
+                for _ in 0..w {
+                    onwards_key_map.push(idx);
+                }
+            }
+        }
+
         Target {
             url: normalize_url(value.url),
             keys: value.keys,
             onwards_key: value.onwards_key,
+            onwards_key_map,
+            onwards_key_index: Arc::new(AtomicUsize::new(0)),
             onwards_model: value.onwards_model,
             limiter: value.rate_limit.map(|rl| {
                 Arc::new(governor::RateLimiter::direct(
@@ -147,7 +166,12 @@ impl ConcurrencyLimiter for SemaphoreConcurrencyLimiter {
 pub struct Target {
     pub url: Url,
     pub keys: Option<KeySet>,
-    pub onwards_key: Option<String>,
+    pub onwards_key: Option<Vec<UpStreamKeyDefinition>>,
+    /// Precomputed index table for weighted round-robin
+    #[builder(default)]
+    pub onwards_key_map: Vec<usize>,
+    #[builder(default)]
+    pub onwards_key_index: Arc<AtomicUsize>,
     pub onwards_model: Option<String>,
     pub limiter: Option<Arc<dyn RateLimiter>>,
     pub concurrency_limiter: Option<Arc<dyn ConcurrencyLimiter>>,
@@ -516,14 +540,22 @@ mod tests {
         }
     }
 
+    fn create_test_onwards_key(keys: Vec<String>) -> Vec<UpStreamKeyDefinition> {
+        keys.into_iter()
+            .map(|key| UpStreamKeyDefinition { key, weight: None })
+            .collect()
+    }
+
     fn create_test_targets(models: Vec<(&str, &str)>) -> Targets {
         let targets_map = Arc::new(DashMap::new());
         for (model, url) in models {
+            let onwards_key = create_test_onwards_key(vec![format!("key-{model}")]);
+
             targets_map.insert(
                 model.to_string(),
                 Target::builder()
                     .url(url.parse().unwrap())
-                    .onwards_key(format!("key-{model}"))
+                    .onwards_key(onwards_key)
                     .build(),
             );
         }
@@ -644,7 +676,7 @@ mod tests {
             "gpt-4".to_string(),
             Target::builder()
                 .url("https://api.openai.com/v2".parse().unwrap()) // Different URL
-                .onwards_key("new-key".to_string()) // Different key
+                .onwards_key(create_test_onwards_key(vec!["new-key".to_string()])) // Different key
                 .onwards_model("gpt-4-turbo".to_string()) // Added model_key
                 .build(),
         );
@@ -665,7 +697,8 @@ mod tests {
         // Verify target properties were updated
         let target = initial_targets.targets.get("gpt-4").unwrap();
         assert_eq!(target.url.as_str(), "https://api.openai.com/v2");
-        assert_eq!(target.onwards_key, Some("new-key".to_string()));
+        assert_eq!(target.onwards_key.as_ref().unwrap().len(), 1);
+        assert_eq!(target.onwards_key.as_ref().unwrap()[0].key, "new-key");
         assert_eq!(target.onwards_model, Some("gpt-4-turbo".to_string()));
     }
 
@@ -686,7 +719,7 @@ mod tests {
             "test-model".to_string(),
             TargetSpec::builder()
                 .url("https://api.example.com".parse().unwrap())
-                .onwards_key("test-key".to_string())
+                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
                 .keys(target_keys)
                 .build(),
         );
@@ -752,7 +785,7 @@ mod tests {
             "test-model".to_string(),
             TargetSpec::builder()
                 .url("https://api.example.com".parse().unwrap())
-                .onwards_key("test-key".to_string())
+                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
                 .build(),
         );
 
@@ -976,7 +1009,7 @@ mod tests {
             "model-with-keys".to_string(),
             TargetSpec::builder()
                 .url("https://api.example.com".parse().unwrap())
-                .onwards_key("test-key".to_string())
+                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
                 .keys(target_keys)
                 .build(),
         );
@@ -984,7 +1017,7 @@ mod tests {
             "model-without-keys".to_string(),
             TargetSpec::builder()
                 .url("https://api.example.com".parse().unwrap())
-                .onwards_key("test-key".to_string())
+                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
                 .build(),
         );
 
@@ -1060,7 +1093,7 @@ mod tests {
     fn test_target_spec_conversion_normalizes_url() {
         let target_spec = TargetSpec::builder()
             .url("https://api.example.com/v1".parse().unwrap())
-            .onwards_key("test-key".to_string())
+            .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
             .build();
 
         let target: Target = target_spec.into();

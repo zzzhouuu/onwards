@@ -632,7 +632,7 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{Target, Targets};
+    use crate::target::{Target, Targets, UpStreamKeyDefinition};
     use axum::http::StatusCode;
     use axum_test::TestServer;
     use dashmap::DashMap;
@@ -673,14 +673,20 @@ mod tests {
             "gpt-4".to_string(),
             target::Target::builder()
                 .url("https://api.openai.com".parse().unwrap())
-                .onwards_key("sk-test-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "sk-test-key".to_string(),
+                    weight: Some(1),
+                }])
                 .build(),
         );
         targets_map.insert(
             "claude-3".to_string(),
             target::Target::builder()
                 .url("https://api.anthropic.com".parse().unwrap())
-                .onwards_key("sk-ant-test-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "sk-ant-test-key".to_string(),
+                    weight: Some(1),
+                }])
                 .build(),
         );
 
@@ -748,7 +754,10 @@ mod tests {
             "test-model".to_string(),
             Target::builder()
                 .url("https://api.example.com".parse().unwrap())
-                .onwards_key("test-api-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "test-api-key".to_string(),
+                    weight: None,
+                }])
                 .build(),
         );
 
@@ -834,14 +843,20 @@ mod tests {
             "header-model".to_string(),
             Target::builder()
                 .url("https://api.header.com".parse().unwrap())
-                .onwards_key("header-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "header-key".to_string(),
+                    weight: None,
+                }])
                 .build(),
         );
         targets_map.insert(
             "body-model".to_string(),
             Target::builder()
                 .url("https://api.body.com".parse().unwrap())
-                .onwards_key("body-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "body-key".to_string(),
+                    weight: None,
+                }])
                 .build(),
         );
 
@@ -893,14 +908,20 @@ mod tests {
             "gpt-4".to_string(),
             Target::builder()
                 .url("https://api.openai.com".parse().unwrap())
-                .onwards_key("sk-openai-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "sk-openai-key".to_string(),
+                    weight: None,
+                }])
                 .build(),
         );
         targets_map.insert(
             "claude-3".to_string(),
             Target::builder()
                 .url("https://api.anthropic.com".parse().unwrap())
-                .onwards_key("sk-ant-key".to_string())
+                .onwards_key(vec![UpStreamKeyDefinition {
+                    key: "sk-ant-key".to_string(),
+                    weight: None,
+                }])
                 .build(),
         );
         targets_map.insert(

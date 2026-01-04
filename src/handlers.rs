@@ -20,6 +20,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::map::Entry;
+use std::sync::atomic::Ordering;
 use tracing::{debug, error, instrument, trace};
 
 /// Filters and modifies headers before forwarding to upstream
@@ -81,7 +82,7 @@ fn filter_headers_for_upstream(headers: &mut HeaderMap, target: &Target) {
     }
 
     // Add Authorization header if target requires authentication to upstream
-    if let Some(key) = &target.onwards_key {
+    if let Some(keys) = &target.onwards_key {
         let header_name_str = target
             .upstream_auth_header_name
             .as_deref()
@@ -91,6 +92,20 @@ fn filter_headers_for_upstream(headers: &mut HeaderMap, target: &Target) {
             .upstream_auth_header_prefix
             .as_deref()
             .unwrap_or("Bearer ");
+
+        let key = if keys.len() == 1 {
+            &keys[0].key
+        } else if !target.onwards_key_map.is_empty() {
+            // Weighted Round Robin
+            let idx = target.onwards_key_index.fetch_add(1, Ordering::Relaxed);
+            let key_idx = target.onwards_key_map[idx % target.onwards_key_map.len()];
+            &keys[key_idx].key
+        } else {
+            // Round Robin
+            let idx = target.onwards_key_index.fetch_add(1, Ordering::Relaxed);
+            &keys[idx % keys.len()].key
+        };
+
         let header_value = format!("{}{}", prefix, key);
         debug!(
             "Adding {} header for upstream {}: {}",
@@ -460,6 +475,7 @@ pub async fn models<T: HttpClient>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::UpStreamKeyDefinition;
 
     #[test]
     fn test_filter_headers_strips_hop_by_hop_headers() {
@@ -676,7 +692,10 @@ mod tests {
 
         let target = Target::builder()
             .url("https://api.example.com".parse().unwrap())
-            .onwards_key("sk-upstream-key".to_string())
+            .onwards_key(vec![UpStreamKeyDefinition {
+                key: "sk-upstream-key".to_string(),
+                weight: None,
+            }])
             .build();
 
         filter_headers_for_upstream(&mut headers, &target);
@@ -716,7 +735,10 @@ mod tests {
 
         let target = Target::builder()
             .url("https://api.example.com".parse().unwrap())
-            .onwards_key("my-api-key-123".to_string())
+            .onwards_key(vec![UpStreamKeyDefinition {
+                key: "my-api-key-123".to_string(),
+                weight: None,
+            }])
             .upstream_auth_header_name("X-API-Key".to_string())
             .build();
 
@@ -739,7 +761,10 @@ mod tests {
 
         let target = Target::builder()
             .url("https://api.example.com".parse().unwrap())
-            .onwards_key("token-xyz".to_string())
+            .onwards_key(vec![UpStreamKeyDefinition {
+                key: "token-xyz".to_string(),
+                weight: None,
+            }])
             .upstream_auth_header_prefix("ApiKey ".to_string())
             .build();
 
@@ -759,7 +784,10 @@ mod tests {
 
         let target = Target::builder()
             .url("https://api.example.com".parse().unwrap())
-            .onwards_key("plain-api-key-456".to_string())
+            .onwards_key(vec![UpStreamKeyDefinition {
+                key: "plain-api-key-456".to_string(),
+                weight: None,
+            }])
             .upstream_auth_header_prefix("".to_string())
             .build();
 
@@ -779,7 +807,10 @@ mod tests {
 
         let target = Target::builder()
             .url("https://api.example.com".parse().unwrap())
-            .onwards_key("secret-key".to_string())
+            .onwards_key(vec![UpStreamKeyDefinition {
+                key: "secret-key".to_string(),
+                weight: None,
+            }])
             .upstream_auth_header_name("X-Custom-Auth".to_string())
             .upstream_auth_header_prefix("Token ".to_string())
             .build();
@@ -849,7 +880,10 @@ mod tests {
 
         let target = Target::builder()
             .url("https://api.anthropic.com".parse().unwrap())
-            .onwards_key("sk-ant-upstream-key".to_string())
+            .onwards_key(vec![UpStreamKeyDefinition {
+                key: "sk-ant-upstream-key".to_string(),
+                weight: None,
+            }])
             .build();
 
         filter_headers_for_upstream(&mut headers, &target);

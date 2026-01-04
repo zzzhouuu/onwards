@@ -16,12 +16,22 @@ Create a `config.json` file with your target configurations:
   "targets": {
     "gpt-4": {
       "url": "https://api.openai.com",
-      "onwards_key": "sk-your-openai-key",
+      "onwards_key": [
+        {
+          "key": "sk-your-openai-key",
+          "weight": 1
+        }
+      ],
       "onwards_model": "gpt-4"
     },
     "claude-3": {
       "url": "https://api.anthropic.com",
-      "onwards_key": "sk-ant-your-anthropic-key"
+      "onwards_key": [
+        {
+          "key": "sk-ant-your-anthropic-key",
+          "weight": 1
+        }
+      ]
     },
     "local-model": {
       "url": "http://localhost:8080"
@@ -43,6 +53,8 @@ disable, set the `--watch` flag to false).
 
 - `url`: The base URL of the AI provider
 - `onwards_key`: API key to include in requests to the target (optional)
+  - `key`: API key value
+  - `weight`: Weight for load balancing (optional, default: 1)
 - `onwards_model`: Model name to use when forwarding requests (optional)
 - `keys`: Array of API keys required for authentication to this target (optional)
 - `rate_limit`: Rate limiting configuration with `requests_per_second` and `burst_size` (optional)
@@ -136,7 +148,11 @@ Global keys apply to all targets that have authentication enabled:
   "targets": {
     "gpt-4": {
       "url": "https://api.openai.com",
-      "onwards_key": "sk-your-openai-key",
+      "onwards_key": [
+        {
+          "key": "sk-your-openai-key"
+        }
+      ],
       "keys": ["target-specific-key"]
     }
   }
@@ -152,7 +168,11 @@ You can also specify authentication keys for individual targets:
   "targets": {
     "secure-gpt-4": {
       "url": "https://api.openai.com",
-      "onwards_key": "sk-your-openai-key",
+      "onwards_key": [
+        {
+          "key": "sk-your-openai-key"
+        }
+      ],
       "keys": ["secure-key-1", "secure-key-2"]
     },
     "open-local": {
@@ -242,7 +262,11 @@ Some providers use custom header names for authentication:
   "targets": {
     "custom-api": {
       "url": "https://api.custom-provider.com",
-      "onwards_key": "your-api-key-123",
+      "onwards_key": [
+        {
+          "key": "your-api-key-123"
+        }
+      ],
       "upstream_auth_header_name": "X-API-Key"
     }
   }
@@ -260,12 +284,20 @@ Some providers use different prefixes or no prefix at all:
   "targets": {
     "api-with-prefix": {
       "url": "https://api.provider1.com",
-      "onwards_key": "token-xyz",
+      "onwards_key": [
+        {
+          "key": "token-xyz"
+        }
+      ],
       "upstream_auth_header_prefix": "ApiKey "
     },
     "api-without-prefix": {
       "url": "https://api.provider2.com",
-      "onwards_key": "plain-key-456",
+      "onwards_key": [
+        {
+          "key": "plain-key-456"
+        }
+      ],
       "upstream_auth_header_prefix": ""
     }
   }
@@ -286,7 +318,11 @@ You can customize both the header name and prefix:
   "targets": {
     "fully-custom": {
       "url": "https://api.custom.com",
-      "onwards_key": "secret-key",
+      "onwards_key": [
+        {
+          "key": "secret-key"
+        }
+      ],
       "upstream_auth_header_name": "X-Custom-Auth",
       "upstream_auth_header_prefix": "Token "
     }
@@ -305,7 +341,11 @@ If these options are not specified, Onwards uses the standard OpenAI-compatible 
   "targets": {
     "standard-api": {
       "url": "https://api.openai.com",
-      "onwards_key": "sk-openai-key"
+      "onwards_key": [
+        {
+          "key": "sk-openai-key"
+        }
+      ]
     }
   }
 }
@@ -327,7 +367,11 @@ Add rate limiting to any target in your `config.json`:
   "targets": {
     "rate-limited-model": {
       "url": "https://api.provider.com",
-      "key": "your-api-key",
+      "onwards_key": [
+        {
+          "key": "your-api-key"
+        }
+      ],
       "rate_limit": {
         "requests_per_second": 5.0,
         "burst_size": 10
@@ -350,14 +394,14 @@ with a `429 Too Many Requests` response.
 ```json
 // Allow 1 request per second with burst of 5
 "rate_limit": {
-  "requests_per_second": 1.0,
-  "burst_size": 5
+"requests_per_second": 1.0,
+"burst_size": 5
 }
 
 // Allow 100 requests per second with burst of 200  
 "rate_limit": {
-  "requests_per_second": 100.0,
-  "burst_size": 200
+"requests_per_second": 100.0,
+"burst_size": 200
 }
 ```
 
@@ -406,7 +450,11 @@ Per-key rate limiting uses a `key_definitions` section in the auth configuration
   "targets": {
     "gpt-4": {
       "url": "https://api.openai.com",
-      "onwards_key": "sk-your-openai-key",
+      "onwards_key": [
+        {
+          "key": "sk-your-openai-key"
+        }
+      ],
       "keys": ["basic_user", "premium_user", "enterprise_user", "fallback-key"]
     }
   }
@@ -467,7 +515,11 @@ Limit the number of concurrent requests to a specific target:
   "targets": {
     "resource-limited-model": {
       "url": "https://api.provider.com",
-      "onwards_key": "your-api-key",
+      "onwards_key": [
+        {
+          "key": "your-api-key"
+        }
+      ],
       "concurrency_limit": {
         "max_concurrent_requests": 5
       }
@@ -509,7 +561,11 @@ You can also set different concurrency limits for different API keys:
   "targets": {
     "gpt-4": {
       "url": "https://api.openai.com",
-      "onwards_key": "sk-your-openai-key"
+      "onwards_key": [
+        {
+          "key": "sk-your-openai-key"
+        }
+      ]
     }
   }
 }
@@ -527,7 +583,11 @@ You can use both rate limiting and concurrency limiting together:
   "targets": {
     "balanced-model": {
       "url": "https://api.provider.com",
-      "onwards_key": "your-api-key",
+      "onwards_key": [
+        {
+          "key": "your-api-key"
+        }
+      ],
       "rate_limit": {
         "requests_per_second": 10,
         "burst_size": 20
@@ -574,11 +634,18 @@ Add pricing information to any target in your `config.json`:
   "targets": {
     "priced-model": {
       "url": "https://api.provider.com",
-      "key": "your-api-key",
+      "onwards_key": [
+        {
+          "key": "your-api-key"
+        }
+      ],
       "response_headers": {
         "Input-Price-Per-Token": "0.0001",
         "Output-Price-Per-Token": "0.0002"
       }
+    }
+  }
+}
 ```
 
 ## Testing
