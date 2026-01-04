@@ -30,24 +30,45 @@ pub struct ConcurrencyLimitParameters {
     pub max_concurrent_requests: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct UpStreamKeyDefinition {
     pub key: String,
     pub weight: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
-pub struct TargetSpec {
+pub struct EndpointSpec {
     pub url: Url,
-    pub keys: Option<KeySet>,
-    pub onwards_key: Option<Vec<UpStreamKeyDefinition>>,
-    pub onwards_model: Option<String>,
-    pub rate_limit: Option<RateLimitParameters>,
-    pub concurrency_limit: Option<ConcurrencyLimitParameters>,
+    pub weight: Option<u32>,
+    pub upstream_keys: Option<Vec<UpStreamKeyDefinition>>,
+    pub upstream_model: Option<String>,
     #[serde(default)]
     pub upstream_auth_header_name: Option<String>,
     #[serde(default)]
     pub upstream_auth_header_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Builder)]
+pub struct Endpoint {
+    pub url: Url,
+    pub weight: Option<u32>,
+    pub upstream_keys: Option<Vec<UpStreamKeyDefinition>>,
+    #[builder(default)]
+    pub upstream_keys_map: Vec<usize>,
+    #[builder(default)]
+    pub upstream_keys_index: Arc<AtomicUsize>,
+
+    pub upstream_model: Option<String>,
+    pub upstream_auth_header_name: Option<String>,
+    pub upstream_auth_header_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+pub struct TargetSpec {
+    pub endpoints: Vec<EndpointSpec>,
+    pub keys: Option<KeySet>,
+    pub rate_limit: Option<RateLimitParameters>,
+    pub concurrency_limit: Option<ConcurrencyLimitParameters>,
 
     /// Custom headers to include in responses (e.g., pricing, metadata)
     #[serde(default)]
@@ -68,25 +89,46 @@ fn normalize_url(mut url: Url) -> Url {
     url
 }
 
-impl From<TargetSpec> for Target {
-    fn from(value: TargetSpec) -> Self {
-        let mut onwards_key_map = Vec::new();
-        if let Some(ref keys) = value.onwards_key {
+impl From<EndpointSpec> for Endpoint {
+    fn from(value: EndpointSpec) -> Self {
+        let mut upstream_keys_map = Vec::new();
+        if let Some(ref keys) = value.upstream_keys {
             for (idx, key_def) in keys.iter().enumerate() {
                 let w = key_def.weight.unwrap_or(1);
                 for _ in 0..w {
-                    onwards_key_map.push(idx);
+                    upstream_keys_map.push(idx);
                 }
             }
         }
 
-        Target {
+        Endpoint {
             url: normalize_url(value.url),
+            weight: value.weight,
+            upstream_keys: value.upstream_keys,
+            upstream_keys_map,
+            upstream_keys_index: Arc::new(AtomicUsize::new(0)),
+            upstream_model: value.upstream_model,
+            upstream_auth_header_name: value.upstream_auth_header_name,
+            upstream_auth_header_prefix: value.upstream_auth_header_prefix,
+        }
+    }
+}
+
+impl From<TargetSpec> for Target {
+    fn from(value: TargetSpec) -> Self {
+        let mut endpoints_map = Vec::new();
+        for (idx, endpoint_def) in value.endpoints.iter().enumerate() {
+            let w = endpoint_def.weight.unwrap_or(1);
+            for _ in 0..w {
+                endpoints_map.push(idx);
+            }
+        }
+
+        Target {
+            endpoints: value.endpoints.iter().map(|e| e.clone().into()).collect(),
+            endpoints_map,
+            endpoints_index: Arc::new(AtomicUsize::new(0)),
             keys: value.keys,
-            onwards_key: value.onwards_key,
-            onwards_key_map,
-            onwards_key_index: Arc::new(AtomicUsize::new(0)),
-            onwards_model: value.onwards_model,
             limiter: value.rate_limit.map(|rl| {
                 Arc::new(governor::RateLimiter::direct(
                     Quota::per_second(rl.requests_per_second)
@@ -97,8 +139,6 @@ impl From<TargetSpec> for Target {
                 SemaphoreConcurrencyLimiter::new(cl.max_concurrent_requests)
                     as Arc<dyn ConcurrencyLimiter>
             }),
-            upstream_auth_header_name: value.upstream_auth_header_name,
-            upstream_auth_header_prefix: value.upstream_auth_header_prefix,
             response_headers: value.response_headers,
         }
     }
@@ -164,19 +204,15 @@ impl ConcurrencyLimiter for SemaphoreConcurrencyLimiter {
 /// the json body when forwarding the request.
 #[derive(Debug, Clone, Builder)]
 pub struct Target {
-    pub url: Url,
+    pub endpoints: Vec<Endpoint>,
+    #[builder(default)]
+    pub endpoints_map: Vec<usize>,
+    #[builder(default)]
+    pub endpoints_index: Arc<AtomicUsize>,
+
     pub keys: Option<KeySet>,
-    pub onwards_key: Option<Vec<UpStreamKeyDefinition>>,
-    /// Precomputed index table for weighted round-robin
-    #[builder(default)]
-    pub onwards_key_map: Vec<usize>,
-    #[builder(default)]
-    pub onwards_key_index: Arc<AtomicUsize>,
-    pub onwards_model: Option<String>,
     pub limiter: Option<Arc<dyn RateLimiter>>,
     pub concurrency_limiter: Option<Arc<dyn ConcurrencyLimiter>>,
-    pub upstream_auth_header_name: Option<String>,
-    pub upstream_auth_header_prefix: Option<String>,
     /// Custom headers to include in responses (e.g., pricing, metadata)
     pub response_headers: Option<HashMap<String, String>>,
 }
@@ -378,12 +414,7 @@ impl Targets {
         let targets = Arc::new(DashMap::new());
         for (name, mut target_spec) in config_file.targets {
             if let Some(ref mut keys) = target_spec.keys {
-                debug!(
-                    "Target {}:{:?} has {} keys configured",
-                    target_spec.url,
-                    target_spec.onwards_model,
-                    keys.len()
-                );
+                debug!("Target {} has {} keys configured", name, keys.len());
                 keys.extend(global_keys.clone());
             } else if !global_keys.is_empty() {
                 target_spec.keys = Some(global_keys.clone());
@@ -540,22 +571,23 @@ mod tests {
         }
     }
 
-    fn create_test_onwards_key(keys: Vec<String>) -> Vec<UpStreamKeyDefinition> {
-        keys.into_iter()
-            .map(|key| UpStreamKeyDefinition { key, weight: None })
-            .collect()
-    }
-
     fn create_test_targets(models: Vec<(&str, &str)>) -> Targets {
         let targets_map = Arc::new(DashMap::new());
         for (model, url) in models {
-            let onwards_key = create_test_onwards_key(vec![format!("key-{model}")]);
-
             targets_map.insert(
                 model.to_string(),
                 Target::builder()
-                    .url(url.parse().unwrap())
-                    .onwards_key(onwards_key)
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url(url.parse().unwrap())
+                            .upstream_keys(vec![
+                                UpStreamKeyDefinition::builder()
+                                    .key(format!("key-{model}"))
+                                    .build(),
+                            ])
+                            .upstream_model(model.to_string())
+                            .build(),
+                    ])
                     .build(),
             );
         }
@@ -675,9 +707,17 @@ mod tests {
         targets_map.insert(
             "gpt-4".to_string(),
             Target::builder()
-                .url("https://api.openai.com/v2".parse().unwrap()) // Different URL
-                .onwards_key(create_test_onwards_key(vec!["new-key".to_string()])) // Different key
-                .onwards_model("gpt-4-turbo".to_string()) // Added model_key
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.openai.com/v2".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("new-key".to_string())
+                                .build(),
+                        ])
+                        .upstream_model("gpt-4-turbo".to_string())
+                        .build(),
+                ])
                 .build(),
         );
         let updated_targets = Targets {
@@ -696,10 +736,19 @@ mod tests {
 
         // Verify target properties were updated
         let target = initial_targets.targets.get("gpt-4").unwrap();
-        assert_eq!(target.url.as_str(), "https://api.openai.com/v2");
-        assert_eq!(target.onwards_key.as_ref().unwrap().len(), 1);
-        assert_eq!(target.onwards_key.as_ref().unwrap()[0].key, "new-key");
-        assert_eq!(target.onwards_model, Some("gpt-4-turbo".to_string()));
+        assert_eq!(
+            target.endpoints[0].url.as_str(),
+            "https://api.openai.com/v2"
+        );
+        assert_eq!(target.endpoints[0].upstream_keys.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            target.endpoints[0].upstream_keys.as_ref().unwrap()[0].key,
+            "new-key"
+        );
+        assert_eq!(
+            target.endpoints[0].upstream_model,
+            Some("gpt-4-turbo".to_string())
+        );
     }
 
     #[test]
@@ -718,8 +767,16 @@ mod tests {
         targets.insert(
             "test-model".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
-                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("test-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .keys(target_keys)
                 .build(),
         );
@@ -784,8 +841,16 @@ mod tests {
         targets.insert(
             "test-model".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
-                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("test-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -824,7 +889,11 @@ mod tests {
         targets.insert(
             "test-model".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .rate_limit(RateLimitParameters {
                     requests_per_second: NonZeroU32::new(10).unwrap(),
                     burst_size: Some(NonZeroU32::new(20).unwrap()),
@@ -850,7 +919,11 @@ mod tests {
         targets.insert(
             "test-model".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1008,16 +1081,32 @@ mod tests {
         targets.insert(
             "model-with-keys".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
-                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("test-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .keys(target_keys)
                 .build(),
         );
         targets.insert(
             "model-without-keys".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
-                .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("test-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1092,14 +1181,25 @@ mod tests {
     #[test]
     fn test_target_spec_conversion_normalizes_url() {
         let target_spec = TargetSpec::builder()
-            .url("https://api.example.com/v1".parse().unwrap())
-            .onwards_key(create_test_onwards_key(vec!["test-key".to_string()]))
+            .endpoints(vec![
+                EndpointSpec::builder()
+                    .url("https://api.example.com/v1".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("test-key".to_string())
+                            .build(),
+                    ])
+                    .build(),
+            ])
             .build();
 
         let target: Target = target_spec.into();
 
         // URL should have trailing slash after conversion
-        assert_eq!(target.url.as_str(), "https://api.example.com/v1/");
+        assert_eq!(
+            target.endpoints[0].url.as_str(),
+            "https://api.example.com/v1/"
+        );
     }
 
     #[test]
@@ -1108,7 +1208,11 @@ mod tests {
         targets.insert(
             "test-model".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .concurrency_limit(ConcurrencyLimitParameters {
                     max_concurrent_requests: 5,
                 })
@@ -1133,7 +1237,11 @@ mod tests {
         targets.insert(
             "test-model".to_string(),
             TargetSpec::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    EndpointSpec::builder()
+                        .url("https://api.example.com/v1".parse().unwrap())
+                        .build(),
+                ])
                 .build(),
         );
 

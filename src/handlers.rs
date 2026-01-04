@@ -8,7 +8,7 @@ use crate::auth;
 use crate::client::HttpClient;
 use crate::errors::OnwardsErrorResponse;
 use crate::models::ListModelResponse;
-use crate::target::Target;
+use crate::target::Endpoint;
 use axum::{
     Json,
     extract::Request,
@@ -31,7 +31,7 @@ use tracing::{debug, error, instrument, trace};
 /// - Removing browser-specific context headers (sec-*, origin, referer)
 /// - Adding upstream authentication if configured
 /// - Adding X-Forwarded-* headers for transparency
-fn filter_headers_for_upstream(headers: &mut HeaderMap, target: &Target) {
+fn filter_headers_for_upstream(headers: &mut HeaderMap, endpoint: &Endpoint) {
     // Headers to remove: hop-by-hop (RFC 7230), auth, browser context, and routing headers
     const HEADERS_TO_STRIP: &[&str] = &[
         // RFC 7230 hop-by-hop headers (MUST remove per spec)
@@ -81,41 +81,41 @@ fn filter_headers_for_upstream(headers: &mut HeaderMap, target: &Target) {
         headers.remove(header);
     }
 
-    // Add Authorization header if target requires authentication to upstream
-    if let Some(keys) = &target.onwards_key {
-        let header_name_str = target
+    // Add Authorization header if endpoint requires authentication to upstream
+    if let Some(keys) = &endpoint.upstream_keys {
+        let header_name_str = endpoint
             .upstream_auth_header_name
             .as_deref()
             .unwrap_or("Authorization");
         let header_name = HeaderName::from_bytes(header_name_str.as_bytes()).unwrap();
-        let prefix = target
+        let prefix = endpoint
             .upstream_auth_header_prefix
             .as_deref()
             .unwrap_or("Bearer ");
 
         let key = if keys.len() == 1 {
             &keys[0].key
-        } else if !target.onwards_key_map.is_empty() {
+        } else if !endpoint.upstream_keys_map.is_empty() {
             // Weighted Round Robin
-            let idx = target.onwards_key_index.fetch_add(1, Ordering::Relaxed);
-            let key_idx = target.onwards_key_map[idx % target.onwards_key_map.len()];
+            let idx = endpoint.upstream_keys_index.fetch_add(1, Ordering::Relaxed);
+            let key_idx = endpoint.upstream_keys_map[idx % endpoint.upstream_keys_map.len()];
             &keys[key_idx].key
         } else {
             // Round Robin
-            let idx = target.onwards_key_index.fetch_add(1, Ordering::Relaxed);
+            let idx = endpoint.upstream_keys_index.fetch_add(1, Ordering::Relaxed);
             &keys[idx % keys.len()].key
         };
 
         let header_value = format!("{}{}", prefix, key);
         debug!(
             "Adding {} header for upstream {}: {}",
-            header_name_str, target.url, header_value
+            header_name_str, endpoint.url, header_value
         );
         headers.insert(header_name, header_value.parse().unwrap());
     } else {
         debug!(
             "No upstream authentication configured for target {}",
-            target.url
+            endpoint.url
         );
     }
 
@@ -183,7 +183,15 @@ pub async fn target_message_handler<T: HttpClient>(
 
     let target = match state.targets.targets.get(&model_name) {
         Some(target) => {
-            debug!("Found target for model '{}': {:?}", model_name, target.url);
+            debug!(
+                "Found target for model '{}': {:?}",
+                model_name,
+                target
+                    .endpoints
+                    .iter()
+                    .map(|e| e.url.to_string())
+                    .collect::<Vec<_>>()
+            );
             target
         }
         None => {
@@ -281,9 +289,27 @@ pub async fn target_message_handler<T: HttpClient>(
         None
     };
 
+    let endpoint = if target.endpoints.len() == 1 {
+        &target.endpoints[0]
+    } else if !target.endpoints_map.is_empty() {
+        // Weighted Round Robin
+        let idx = target.endpoints_index.fetch_add(1, Ordering::Relaxed);
+        let key_idx = target.endpoints_map[idx % target.endpoints_map.len()];
+        &target.endpoints[key_idx]
+    } else {
+        // Round Robin
+        let idx = target.endpoints_index.fetch_add(1, Ordering::Relaxed);
+        &target.endpoints[idx % target.endpoints.len()]
+    };
+    debug!(
+        "Upstream endpoint for model '{}': {:?}",
+        model_name,
+        endpoint.url.to_string()
+    );
+
     // Users can specify the onwards value of the model field in the target
     // config. If not supplied, its left as is.
-    if let Some(rewrite) = target.onwards_model.clone()
+    if let Some(rewrite) = endpoint.upstream_model.clone()
         && !body_bytes.is_empty()
     {
         debug!("Rewriting model key to: {}", rewrite);
@@ -326,7 +352,7 @@ pub async fn target_message_handler<T: HttpClient>(
     // Strip duplicate path prefix if the target URL already contains it
     // For example: target URL is "https://api.openai.com/v1/" and request path is "/v1/chat/completions"
     // We want to avoid "https://api.openai.com/v1/v1/chat/completions"
-    let target_path = target.url.path().trim_end_matches('/');
+    let target_path = endpoint.url.path().trim_end_matches('/');
     let request_path = path_and_query.strip_prefix('/').unwrap_or(path_and_query);
 
     let path_to_join = if !target_path.is_empty() && target_path != "/" {
@@ -349,7 +375,7 @@ pub async fn target_message_handler<T: HttpClient>(
         request_path
     };
 
-    let upstream_uri = target
+    let upstream_uri = endpoint
         .url
         .join(path_to_join)
         .map_err(|_| OnwardsErrorResponse::internal())?
@@ -387,7 +413,7 @@ pub async fn target_message_handler<T: HttpClient>(
     req.headers_mut().remove(TRANSFER_ENCODING);
 
     // Filter headers for upstream forwarding (RFC 7230 compliance, security, etc.)
-    filter_headers_for_upstream(req.headers_mut(), &target);
+    filter_headers_for_upstream(req.headers_mut(), endpoint);
 
     // Log full outgoing request details for debugging
     trace!(
@@ -475,7 +501,7 @@ pub async fn models<T: HttpClient>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::UpStreamKeyDefinition;
+    use crate::target::{Target, UpStreamKeyDefinition};
 
     #[test]
     fn test_filter_headers_strips_hop_by_hop_headers() {
@@ -494,10 +520,14 @@ mod tests {
         headers.insert("content-type", "application/json".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Verify hop-by-hop headers were removed
         assert!(!headers.contains_key("connection"));
@@ -522,10 +552,14 @@ mod tests {
         headers.insert("api-key", "another-key".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Verify all auth headers were removed (client credentials stripped)
         assert!(!headers.contains_key("authorization"));
@@ -544,10 +578,14 @@ mod tests {
         headers.insert("sec-fetch-user", "?1".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Verify all sec-fetch-* headers were removed
         assert!(!headers.contains_key("sec-fetch-site"));
@@ -571,10 +609,14 @@ mod tests {
         headers.insert("user-agent", "Mozilla/5.0...".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Verify all sec-ch-ua* headers were removed
         assert!(!headers.contains_key("sec-ch-ua"));
@@ -596,10 +638,14 @@ mod tests {
         headers.insert("cookie", "session=abc123".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         assert!(!headers.contains_key("origin"));
         assert!(!headers.contains_key("referer"));
@@ -623,10 +669,14 @@ mod tests {
         headers.insert("if-range", "\"abc123\"".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         assert!(!headers.contains_key("if-modified-since"));
         assert!(!headers.contains_key("if-none-match"));
@@ -643,10 +693,14 @@ mod tests {
         headers.insert("content-type", "application/json".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // model-override should be removed (already consumed for routing)
         assert!(!headers.contains_key("model-override"));
@@ -668,10 +722,14 @@ mod tests {
         headers.insert("x-stainless-os", "macOS".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // All these headers should be kept
         assert!(headers.contains_key("content-type"));
@@ -691,14 +749,19 @@ mod tests {
         headers.insert("authorization", "Bearer client-token".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
-            .onwards_key(vec![UpStreamKeyDefinition {
-                key: "sk-upstream-key".to_string(),
-                weight: None,
-            }])
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("sk-upstream-key".to_string())
+                            .build(),
+                    ])
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Client auth should be removed and replaced with onwards_key
         assert!(headers.contains_key("authorization"));
@@ -716,11 +779,15 @@ mod tests {
         headers.insert("authorization", "Bearer client-token".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             // No onwards_key configured
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Client auth should be removed and NOT replaced (no onwards_key)
         assert!(!headers.contains_key("authorization"));
@@ -734,15 +801,20 @@ mod tests {
         headers.insert("authorization", "Bearer client-token".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
-            .onwards_key(vec![UpStreamKeyDefinition {
-                key: "my-api-key-123".to_string(),
-                weight: None,
-            }])
-            .upstream_auth_header_name("X-API-Key".to_string())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("my-api-key-123".to_string())
+                            .build(),
+                    ])
+                    .upstream_auth_header_name("X-API-Key".to_string())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Client auth should be removed
         assert!(!headers.contains_key("authorization"));
@@ -760,15 +832,20 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
-            .onwards_key(vec![UpStreamKeyDefinition {
-                key: "token-xyz".to_string(),
-                weight: None,
-            }])
-            .upstream_auth_header_prefix("ApiKey ".to_string())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("token-xyz".to_string())
+                            .build(),
+                    ])
+                    .upstream_auth_header_prefix("ApiKey ".to_string())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Should use custom prefix with default Authorization header
         assert!(headers.contains_key("authorization"));
@@ -783,15 +860,20 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
-            .onwards_key(vec![UpStreamKeyDefinition {
-                key: "plain-api-key-456".to_string(),
-                weight: None,
-            }])
-            .upstream_auth_header_prefix("".to_string())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("plain-api-key-456".to_string())
+                            .build(),
+                    ])
+                    .upstream_auth_header_prefix("".to_string())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Should use empty prefix (just the key value)
         assert!(headers.contains_key("authorization"));
@@ -806,16 +888,21 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
-            .onwards_key(vec![UpStreamKeyDefinition {
-                key: "secret-key".to_string(),
-                weight: None,
-            }])
-            .upstream_auth_header_name("X-Custom-Auth".to_string())
-            .upstream_auth_header_prefix("Token ".to_string())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("secret-key".to_string())
+                            .build(),
+                    ])
+                    .upstream_auth_header_name("X-Custom-Auth".to_string())
+                    .upstream_auth_header_prefix("Token ".to_string())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Should use both custom header name and custom prefix
         assert!(!headers.contains_key("authorization"));
@@ -831,10 +918,14 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         let target = Target::builder()
-            .url("https://api.example.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         assert!(headers.contains_key("x-forwarded-proto"));
         assert_eq!(
@@ -879,14 +970,19 @@ mod tests {
         headers.insert("user-agent", "Mozilla/5.0...".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.anthropic.com".parse().unwrap())
-            .onwards_key(vec![UpStreamKeyDefinition {
-                key: "sk-ant-upstream-key".to_string(),
-                weight: None,
-            }])
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.example.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("sk-ant-upstream-key".to_string())
+                            .build(),
+                    ])
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // Verify all problematic headers were removed
         assert!(!headers.contains_key("connection"));
@@ -930,10 +1026,19 @@ mod tests {
         headers.insert("x-stainless-runtime", "browser:chrome".parse().unwrap());
 
         let target = Target::builder()
-            .url("https://api.anthropic.com".parse().unwrap())
+            .endpoints(vec![
+                Endpoint::builder()
+                    .url("https://api.anthropic.com".parse().unwrap())
+                    .upstream_keys(vec![
+                        UpStreamKeyDefinition::builder()
+                            .key("sk-ant-upstream-key".to_string())
+                            .build(),
+                    ])
+                    .build(),
+            ])
             .build();
 
-        filter_headers_for_upstream(&mut headers, &target);
+        filter_headers_for_upstream(&mut headers, &target.endpoints[0]);
 
         // All provider-specific headers should be kept
         assert!(headers.contains_key("anthropic-version"));

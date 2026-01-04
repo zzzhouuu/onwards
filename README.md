@@ -15,26 +15,36 @@ Create a `config.json` file with your target configurations:
 {
   "targets": {
     "gpt-4": {
-      "url": "https://api.openai.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-your-openai-key",
-          "weight": 1
+          "url": "https://api.openai.com",
+          "upstream_keys": [
+            {
+              "key": "sk-your-openai-key"
+            }
+          ],
+          "upstream_model": "gpt-4"
         }
-      ],
-      "onwards_model": "gpt-4"
+      ]
     },
     "claude-3": {
-      "url": "https://api.anthropic.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-ant-your-anthropic-key",
-          "weight": 1
+          "url": "https://api.anthropic.com",
+          "upstream_keys": [
+            {
+              "key": "sk-ant-your-anthropic-key"
+            }
+          ]
         }
       ]
     },
     "local-model": {
-      "url": "http://localhost:8080"
+      "endpoints": [
+        {
+          "url": "http://localhost:8080"
+        }
+      ]
     }
   }
 }
@@ -51,16 +61,18 @@ disable, set the `--watch` flag to false).
 
 ### Configuration Options
 
-- `url`: The base URL of the AI provider
-- `onwards_key`: API key to include in requests to the target (optional)
-  - `key`: API key value
+- `endpoints`: Array of target endpoints to route requests to
+  - `url`: The base URL of the AI provider
   - `weight`: Weight for load balancing (optional, default: 1)
-- `onwards_model`: Model name to use when forwarding requests (optional)
+  - `upstream_keys`: API key to include in requests to the target (optional)
+    - `key`: API key value
+    - `weight`: Weight for load balancing (optional, default: 1)
+  - `upstream_model`: Model name to use when forwarding requests (optional)
+  - `upstream_auth_header_name`: Custom header name for upstream authentication (optional, defaults to "Authorization")
+  - `upstream_auth_header_prefix`: Custom prefix for upstream authentication header value (optional, defaults to "Bearer ")
 - `keys`: Array of API keys required for authentication to this target (optional)
 - `rate_limit`: Rate limiting configuration with `requests_per_second` and `burst_size` (optional)
 - `concurrency_limit`: Concurrency limiting configuration with `max_concurrent_requests` (optional)
-- `upstream_auth_header_name`: Custom header name for upstream authentication (optional, defaults to "Authorization")
-- `upstream_auth_header_prefix`: Custom prefix for upstream authentication header value (optional, defaults to "Bearer ")
 - `rate_limit`: Configuration for per-target rate limiting (optional)
   - `requests_per_second`: Number of requests allowed per second
   - `burst_size`: Maximum burst size of requests
@@ -147,10 +159,14 @@ Global keys apply to all targets that have authentication enabled:
   },
   "targets": {
     "gpt-4": {
-      "url": "https://api.openai.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-your-openai-key"
+          "url": "https://api.openai.com",
+          "upstream_keys": [
+            {
+              "key": "sk-your-openai-key"
+            }
+          ]
         }
       ],
       "keys": ["target-specific-key"]
@@ -167,10 +183,14 @@ You can also specify authentication keys for individual targets:
 {
   "targets": {
     "secure-gpt-4": {
-      "url": "https://api.openai.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-your-openai-key"
+          "url": "https://api.openai.com",
+          "upstream_keys": [
+            {
+              "key": "sk-your-openai-key"
+            }
+          ]
         }
       ],
       "keys": ["secure-key-1", "secure-key-2"]
@@ -261,13 +281,17 @@ Some providers use custom header names for authentication:
 {
   "targets": {
     "custom-api": {
-      "url": "https://api.custom-provider.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "your-api-key-123"
+          "url": "https://api.custom-provider.com",
+          "upstream_keys": [
+            {
+              "key": "your-api-key-123"
+            }
+          ],
+          "upstream_auth_header_name": "X-API-Key"
         }
-      ],
-      "upstream_auth_header_name": "X-API-Key"
+      ]
     }
   }
 }
@@ -283,22 +307,30 @@ Some providers use different prefixes or no prefix at all:
 {
   "targets": {
     "api-with-prefix": {
-      "url": "https://api.provider1.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "token-xyz"
+          "url": "https://api.provider1.com",
+          "upstream_keys": [
+            {
+              "key": "token-xyz"
+            }
+          ],
+          "upstream_auth_header_prefix": "ApiKey "
         }
-      ],
-      "upstream_auth_header_prefix": "ApiKey "
+      ]
     },
     "api-without-prefix": {
-      "url": "https://api.provider2.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "plain-key-456"
+          "url": "https://api.provider2.com",
+          "upstream_keys": [
+            {
+              "key": "plain-key-456"
+            }
+          ],
+          "upstream_auth_header_prefix": ""
         }
-      ],
-      "upstream_auth_header_prefix": ""
+      ]
     }
   }
 }
@@ -317,14 +349,18 @@ You can customize both the header name and prefix:
 {
   "targets": {
     "fully-custom": {
-      "url": "https://api.custom.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "secret-key"
+          "url": "https://api.custom.com",
+          "upstream_keys": [
+            {
+              "key": "secret-key"
+            }
+          ],
+          "upstream_auth_header_name": "X-Custom-Auth",
+          "upstream_auth_header_prefix": "Token "
         }
-      ],
-      "upstream_auth_header_name": "X-Custom-Auth",
-      "upstream_auth_header_prefix": "Token "
+      ]
     }
   }
 }
@@ -340,10 +376,14 @@ If these options are not specified, Onwards uses the standard OpenAI-compatible 
 {
   "targets": {
     "standard-api": {
-      "url": "https://api.openai.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-openai-key"
+          "url": "https://api.openai.com",
+          "upstream_keys": [
+            {
+              "key": "sk-openai-key"
+            }
+          ]
         }
       ]
     }
@@ -366,10 +406,14 @@ Add rate limiting to any target in your `config.json`:
 {
   "targets": {
     "rate-limited-model": {
-      "url": "https://api.provider.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "your-api-key"
+          "url": "https://api.provider.com",
+          "upstream_keys": [
+            {
+              "key": "your-api-key"
+            }
+          ]
         }
       ],
       "rate_limit": {
@@ -394,14 +438,14 @@ with a `429 Too Many Requests` response.
 ```json
 // Allow 1 request per second with burst of 5
 "rate_limit": {
-"requests_per_second": 1.0,
-"burst_size": 5
+  "requests_per_second": 1.0,
+  "burst_size": 5
 }
 
 // Allow 100 requests per second with burst of 200  
 "rate_limit": {
-"requests_per_second": 100.0,
-"burst_size": 200
+  "requests_per_second": 100.0,
+  "burst_size": 200
 }
 ```
 
@@ -449,10 +493,14 @@ Per-key rate limiting uses a `key_definitions` section in the auth configuration
   },
   "targets": {
     "gpt-4": {
-      "url": "https://api.openai.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-your-openai-key"
+          "url": "https://api.openai.com",
+          "upstream_keys": [
+            {
+              "key": "sk-your-openai-key"
+            }
+          ]
         }
       ],
       "keys": ["basic_user", "premium_user", "enterprise_user", "fallback-key"]
@@ -514,10 +562,14 @@ Limit the number of concurrent requests to a specific target:
 {
   "targets": {
     "resource-limited-model": {
-      "url": "https://api.provider.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "your-api-key"
+          "url": "https://api.provider.com",
+          "upstream_keys": [
+            {
+              "key": "your-api-key"
+            }
+          ]
         }
       ],
       "concurrency_limit": {
@@ -560,10 +612,14 @@ You can also set different concurrency limits for different API keys:
   },
   "targets": {
     "gpt-4": {
-      "url": "https://api.openai.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "sk-your-openai-key"
+          "url": "https://api.openai.com",
+          "upstream_keys": [
+            {
+              "key": "sk-your-openai-key"
+            }
+          ]
         }
       ]
     }
@@ -582,10 +638,14 @@ You can use both rate limiting and concurrency limiting together:
 {
   "targets": {
     "balanced-model": {
-      "url": "https://api.provider.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "your-api-key"
+          "url": "https://api.provider.com",
+          "upstream_keys": [
+            {
+              "key": "your-api-key"
+            }
+          ]
         }
       ],
       "rate_limit": {
@@ -633,10 +693,14 @@ Add pricing information to any target in your `config.json`:
 {
   "targets": {
     "priced-model": {
-      "url": "https://api.provider.com",
-      "onwards_key": [
+      "endpoints": [
         {
-          "key": "your-api-key"
+          "url": "https://api.provider.com",
+          "upstream_keys": [
+            {
+              "key": "your-api-key"
+            }
+          ]
         }
       ],
       "response_headers": {

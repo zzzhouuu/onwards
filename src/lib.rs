@@ -632,7 +632,7 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{Target, Targets, UpStreamKeyDefinition};
+    use crate::target::{Endpoint, Target, Targets, UpStreamKeyDefinition};
     use axum::http::StatusCode;
     use axum_test::TestServer;
     use dashmap::DashMap;
@@ -669,24 +669,35 @@ mod tests {
     async fn test_multiple_targets_routing() {
         // Create targets with multiple models
         let targets_map = Arc::new(DashMap::new());
+
         targets_map.insert(
             "gpt-4".to_string(),
-            target::Target::builder()
-                .url("https://api.openai.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "sk-test-key".to_string(),
-                    weight: Some(1),
-                }])
+            Target::builder()
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.openai.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("sk-test-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
         targets_map.insert(
             "claude-3".to_string(),
-            target::Target::builder()
-                .url("https://api.anthropic.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "sk-ant-test-key".to_string(),
-                    weight: Some(1),
-                }])
+            Target::builder()
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.anthropic.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("sk-ant-test-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -753,11 +764,17 @@ mod tests {
         targets_map.insert(
             "test-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "test-api-key".to_string(),
-                    weight: None,
-                }])
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("test-api-key".to_string())
+                                .build(),
+                        ])
+                        .upstream_model("test-model".to_string())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -839,24 +856,35 @@ mod tests {
     async fn test_model_override_header_takes_precedence() {
         // Create two targets
         let targets_map = Arc::new(DashMap::new());
+
         targets_map.insert(
             "header-model".to_string(),
             Target::builder()
-                .url("https://api.header.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "header-key".to_string(),
-                    weight: None,
-                }])
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.header.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("header-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
         targets_map.insert(
             "body-model".to_string(),
             Target::builder()
-                .url("https://api.body.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "body-key".to_string(),
-                    weight: None,
-                }])
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.body.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("body-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -907,28 +935,46 @@ mod tests {
         targets_map.insert(
             "gpt-4".to_string(),
             Target::builder()
-                .url("https://api.openai.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "sk-openai-key".to_string(),
-                    weight: None,
-                }])
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.openai.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("sk-openai-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
         targets_map.insert(
             "claude-3".to_string(),
             Target::builder()
-                .url("https://api.anthropic.com".parse().unwrap())
-                .onwards_key(vec![UpStreamKeyDefinition {
-                    key: "sk-ant-key".to_string(),
-                    weight: None,
-                }])
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.anthropic.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("sk-ant-key".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
         targets_map.insert(
             "gemini-pro".to_string(),
             Target::builder()
-                .url("https://api.google.com".parse().unwrap())
-                .onwards_model("gemini-1.5-pro".to_string())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.google.com".parse().unwrap())
+                        .upstream_keys(vec![
+                            UpStreamKeyDefinition::builder()
+                                .key("gemini-1.5-pro".to_string())
+                                .build(),
+                        ])
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -999,7 +1045,11 @@ mod tests {
         targets_map.insert(
             "gpt-4".to_string(),
             Target::builder()
-                .url("https://api.openai.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.openai.com".parse().unwrap())
+                        .build(),
+                ])
                 .keys(gpt4_keys)
                 .build(),
         );
@@ -1008,7 +1058,11 @@ mod tests {
         targets_map.insert(
             "claude-3".to_string(),
             Target::builder()
-                .url("https://api.anthropic.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.anthropic.com".parse().unwrap())
+                        .build(),
+                ])
                 .keys(claude_keys)
                 .build(),
         );
@@ -1017,7 +1071,11 @@ mod tests {
         targets_map.insert(
             "gemini-pro".to_string(),
             Target::builder()
-                .url("https://api.google.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.google.com".parse().unwrap())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1120,7 +1178,11 @@ mod tests {
         targets_map.insert(
             "rate-limited-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .limiter(Arc::new(BlockingRateLimiter) as Arc<dyn RateLimiter>)
                 .build(),
         );
@@ -1178,7 +1240,11 @@ mod tests {
         targets_map.insert(
             "rate-limited-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .limiter(Arc::new(AllowingRateLimiter) as Arc<dyn RateLimiter>)
                 .build(),
         );
@@ -1239,21 +1305,33 @@ mod tests {
         targets_map.insert(
             "blocked-model".to_string(),
             Target::builder()
-                .url("https://blocked.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://blocked.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .limiter(Arc::new(BlockingRateLimiter) as Arc<dyn RateLimiter>)
                 .build(),
         );
         targets_map.insert(
             "allowed-model".to_string(),
             Target::builder()
-                .url("https://allowed.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://allowed.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .limiter(Arc::new(AllowingRateLimiter) as Arc<dyn RateLimiter>)
                 .build(),
         );
         targets_map.insert(
             "unlimited-model".to_string(),
             Target::builder()
-                .url("https://unlimited.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://unlimited.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .build(), // No rate limiter
         );
 
@@ -1317,7 +1395,11 @@ mod tests {
         targets_map.insert(
             "limited-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .concurrency_limiter(SemaphoreConcurrencyLimiter::new(5))
                 .build(),
         );
@@ -1359,7 +1441,11 @@ mod tests {
         targets_map.insert(
             "limited-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .concurrency_limiter(SemaphoreConcurrencyLimiter::new(1))
                 .build(),
         );
@@ -1423,7 +1509,11 @@ mod tests {
         targets_map.insert(
             "test-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1677,7 +1767,12 @@ mod tests {
         targets_map.insert(
             "test-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_model("test-model".to_string())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1736,7 +1831,12 @@ mod tests {
         targets_map.insert(
             "test-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_model("test-model".to_string())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1783,7 +1883,12 @@ mod tests {
         targets_map.insert(
             "test-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .upstream_model("test-model".to_string())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1832,7 +1937,12 @@ mod tests {
         targets_map.insert(
             "gpt-4".to_string(),
             Target::builder()
-                .url("https://api.openai.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.openai.com".parse().unwrap())
+                        .upstream_model("gpt-4".to_string())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1905,7 +2015,12 @@ mod tests {
         targets_map.insert(
             "gpt-4".to_string(),
             Target::builder()
-                .url("https://api.openai.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.openai.com".parse().unwrap())
+                        .upstream_model("gpt-4".to_string())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -1974,7 +2089,11 @@ mod tests {
         targets_map.insert(
             "test-model".to_string(),
             Target::builder()
-                .url("https://api.example.com".parse().unwrap())
+                .endpoints(vec![
+                    Endpoint::builder()
+                        .url("https://api.example.com".parse().unwrap())
+                        .build(),
+                ])
                 .build(),
         );
 
@@ -2045,7 +2164,11 @@ mod tests {
             targets_map.insert(
                 "gpt-4".to_string(),
                 Target::builder()
-                    .url("https://api.openai.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.openai.com".parse().unwrap())
+                            .build(),
+                    ])
                     .response_headers(response_headers)
                     .build(),
             );
@@ -2080,7 +2203,11 @@ mod tests {
             targets_map.insert(
                 "free-model".to_string(),
                 Target::builder()
-                    .url("https://api.example.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.example.com".parse().unwrap())
+                            .build(),
+                    ])
                     .build(),
             );
 
@@ -2118,7 +2245,11 @@ mod tests {
             targets_map.insert(
                 "error-model".to_string(),
                 Target::builder()
-                    .url("https://api.example.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.example.com".parse().unwrap())
+                            .build(),
+                    ])
                     .response_headers(response_headers)
                     .build(),
             );
@@ -2161,7 +2292,11 @@ mod tests {
             targets_map.insert(
                 "expensive-model".to_string(),
                 Target::builder()
-                    .url("https://api.expensive.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.expensive.com".parse().unwrap())
+                            .build(),
+                    ])
                     .response_headers(expensive_headers)
                     .build(),
             );
@@ -2173,7 +2308,11 @@ mod tests {
             targets_map.insert(
                 "cheap-model".to_string(),
                 Target::builder()
-                    .url("https://api.cheap.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.cheap.com".parse().unwrap())
+                            .build(),
+                    ])
                     .response_headers(cheap_headers)
                     .build(),
             );
@@ -2225,7 +2364,11 @@ mod tests {
             targets_map.insert(
                 "input-only-model".to_string(),
                 Target::builder()
-                    .url("https://api.example.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.example.com".parse().unwrap())
+                            .build(),
+                    ])
                     .response_headers(response_headers)
                     .build(),
             );
@@ -2263,7 +2406,11 @@ mod tests {
             targets_map.insert(
                 "output-only-model".to_string(),
                 Target::builder()
-                    .url("https://api.example.com".parse().unwrap())
+                    .endpoints(vec![
+                        Endpoint::builder()
+                            .url("https://api.example.com".parse().unwrap())
+                            .build(),
+                    ])
                     .response_headers(response_headers)
                     .build(),
             );
